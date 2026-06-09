@@ -1,0 +1,56 @@
+---
+description: Contexto del proyecto LynchCt — cohorte Lynch CAR con DataNex
+alwaysApply: true
+---
+
+# LynchCt — instrucciones para el agente
+
+## Objetivo
+
+Análisis de datos del **síndrome de Lynch** (cohorte **CAR / Cardiología**, pacte 2026) cruzando la cohorte local con **DataNex** (Hospital Clínic, AWS Athena vía Metabase).
+
+## Privacidad (obligatorio)
+
+- **Nunca** leer, mostrar ni commitear archivos en `data/` (Excel, CSV con pacientes). Contienen datos sensibles.
+- Para inspeccionar el Excel solo usar `python scripts/excel_to_csv.py --inspect` (hojas y nombres de columna, sin filas).
+- No añadir datos reales a logs, tests, commits ni documentación.
+
+## Estructura del repo
+
+| Ruta | Uso |
+|------|-----|
+| `data/` | Datos locales (gitignored salvo `.gitkeep`) |
+| `data/processed/` | CSV generados por `scripts/excel_to_csv.py` |
+| `scripts/excel_to_csv.py` | Excel del pacte → CSV (constantes y lógica en un solo archivo) |
+| `connection.py` | `execute_query()`, `execute_query_yearly()` vía API Metabase |
+| `DB_CONTEXT_AWS.md` | Esquema DataNex, reglas SQL y joins — **consultar antes de escribir SQL** |
+| `requirements.txt` | Dependencias Python |
+
+## Pipeline Excel → CSV
+
+1. `python scripts/excel_to_csv.py --inspect` — ver estructura sin datos.
+2. `python scripts/excel_to_csv.py` — exporta a `data/processed/`.
+3. Columnas de salida: `sap` (entero, NHC) y `date_of_birth` (fecha ISO `YYYY-MM-DD`).
+4. Para cambiar rutas o hoja: editar las constantes al inicio de `scripts/excel_to_csv.py`.
+
+## Consultas DataNex
+
+- Importar desde la raíz: `from connection import execute_query, execute_query_yearly`.
+- Credenciales en `.env` del OneDrive del usuario (no en el repo).
+- SQL: dialecto **Athena (Trino)**; prefijo obligatorio `datascope_gestor_prod.` en tablas físicas.
+- Tope silencioso ~2000 filas en Metabase → usar `execute_query_yearly` o cortar por mes/unidad.
+- Regla crítica: **no** unir `rc` por `episode_ref` (está NULL); unir por `patient_ref` + ventana temporal.
+- Jerarquía: `episodes` → `care_levels` → `movements`. CAR = `ou_med_ref = 'CAR'`.
+
+## Convenciones de código
+
+- Scripts en `scripts/`. Reutilizar `connection.py`; no duplicar lógica Metabase.
+- Preferir scripts simples y comentados; sin YAML de configuración por ahora.
+- Dependencias en `requirements.txt`. Python 3.10+.
+- Responder al usuario en **español**.
+
+## Estado actual
+
+- Excel local: `data/Pacte Sd Lynch CAR 2026.xlsx` (no versionado).
+- Cohorte en **Hoja1**: ~414 filas, columnas `SAP` y `Date of Birth`.
+- Pendiente: exportar CSV, validar cohorte, cruzar `sap` con DataNex (`patient_ref`).
