@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Convierte el Excel del pacte Lynch (CAR) a CSV para análisis con DataNex.
+Convierte el Excel Pacte Sd a CSV para análisis con DataNex.
 
 Uso:
     python scripts/excel_to_csv.py              # exporta CSV
@@ -140,7 +140,7 @@ def export_csv(excel_path: Path, output_dir: Path) -> Path:
     cohort = transform_cohort(raw)
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    out_path = output_dir / f"{excel_path.stem}.csv"
+    out_path = output_dir / f"{to_snake_case(excel_path.stem)}.csv"
 
     # utf-8-sig: Excel en Windows abre bien los acentos. date_format: fechas como 1965-03-05.
     cohort.to_csv(
