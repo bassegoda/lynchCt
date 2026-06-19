@@ -28,7 +28,7 @@ import pandas as pd
 ROOT_PATH = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT_PATH))
 
-from connection import execute_query_yearly  # noqa: E402
+from connection import execute_query, execute_query_yearly  # noqa: E402
 
 # --- Rutas ---
 PATH_DATA = ROOT_PATH / "data"
@@ -37,14 +37,15 @@ OUTPUT_CSV = PATH_DATA / "processed" / "tc_cohorte_lynch_car.csv"
 OUTPUT_XLSX = PATH_DATA / "processed" / "tc_cohorte_lynch_car.xlsx"
 
 OUTPUT_COLUMNS = [
-    "status",
+    "estado",
     "nhc",
-    "data_naixement",
-    "sexe",
-    "episode_sap",
-    "data_prova",
+    "fecha_nacimiento",
+    "sexo",
+    "episodio_sap",
+    "fecha_prueba",
+    "hora_prueba",
     "prestacion",
-    "prov_descr",
+    "descripcion",
     "accession_number",
 ]
 
@@ -84,11 +85,19 @@ PROV_REFS_SQL = ", ".join(f"'{c}'" for c in TC_ABDOMINAL)
 
 
 def load_cohort() -> pd.DataFrame:
-    """Carga la cohorte y deja solo NHC válidos. No imprime datos individuales."""
+    """Carga la cohorte y deja solo NHC válidos y únicos. No imprime datos individuales."""
     df = pd.read_csv(COHORT_CSV)
     df = df.dropna(subset=["sap"]).copy()
     df["sap"] = df["sap"].astype("int64")
     df["status"] = df["status"].astype(str).str.strip()
+
+    # Deduplica por NHC: un NHC repetido duplicaría sus pruebas en el INNER JOIN
+    # con provisions (cada TC se emparejaría con cada fila de cohorte).
+    n_dups = int(df["sap"].duplicated().sum())
+    if n_dups:
+        print(f"Aviso: {n_dups} NHC duplicado(s) en la cohorte; se conserva la primera fila.")
+        df = df.drop_duplicates(subset=["sap"], keep="first")
+
     return df
 
 
@@ -127,31 +136,56 @@ imaging AS (
 )
 
 SELECT
-    '{status_label}'                         AS status,
     i.nhc,
-    CAST(d.birth_date AS date)                AS data_naixement,
-    CASE d.sex
-        WHEN 1 THEN 'Home'
-        WHEN 2 THEN 'Dona'
-        WHEN 3 THEN 'Altre'
-    END                                       AS sexe,
-    i.episode_sap,
-    CAST(i.start_date AS date)                AS data_prova,
+    i.episode_sap                             AS episodio_sap,
+    i.start_date                              AS fecha_hora_prueba,
     i.prov_ref                                AS prestacion,
-    i.prov_descr,
+    i.prov_descr                              AS descripcion,
     i.accession_number
 FROM imaging i
-LEFT JOIN datascope_validador_prod.demographics d
-    ON d.nhc = i.nhc
-ORDER BY i.nhc, data_prova
+ORDER BY i.nhc, fecha_hora_prueba
 """
 
 
-def run_group(nhcs: list[int], status_label: str) -> pd.DataFrame:
-    """Ejecuta la extracción de un grupo año a año (esquiva el tope de 2000 filas)."""
-    if not nhcs:
-        return pd.DataFrame()
+def build_demographics_query(cohort_values: str) -> str:
+    """Demografía (fecha de nacimiento y sexo) para todos los NHC del grupo."""
+    return f"""
+WITH cohort AS (
+    SELECT *
+    FROM (VALUES
+        {cohort_values}
+    ) AS t(nhc)
+)
 
+SELECT
+    c.nhc,
+    CAST(d.birth_date AS date)                AS fecha_nacimiento,
+    CASE d.sex
+        WHEN 1 THEN 'Hombre'
+        WHEN 2 THEN 'Mujer'
+        WHEN 3 THEN 'Otro'
+    END                                       AS sexo
+FROM cohort c
+LEFT JOIN datascope_validador_prod.demographics d
+    ON d.nhc = c.nhc
+"""
+
+
+def fetch_demographics(nhcs: list[int]) -> pd.DataFrame:
+    """Fecha de nacimiento y sexo (DataNex) para todos los NHC del grupo."""
+    frames: list[pd.DataFrame] = []
+    for i in range(0, len(nhcs), COHORT_BATCH_SIZE):
+        chunk = nhcs[i : i + COHORT_BATCH_SIZE]
+        frames.append(execute_query(build_demographics_query(cohort_values_sql(chunk))))
+    if not frames:
+        return pd.DataFrame(columns=["nhc", "fecha_nacimiento", "sexo"])
+    demo = pd.concat(frames, ignore_index=True)
+    demo["nhc"] = pd.to_numeric(demo["nhc"], errors="coerce").astype("Int64")
+    return demo
+
+
+def fetch_imaging(nhcs: list[int], status_label: str) -> pd.DataFrame:
+    """Extrae los TC del grupo año a año (esquiva el tope de 2000 filas de Metabase)."""
     min_year, max_year = WINDOWS[status_label]
     frames: list[pd.DataFrame] = []
 
@@ -170,21 +204,59 @@ def run_group(nhcs: list[int], status_label: str) -> pd.DataFrame:
 
     if not frames:
         return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True)
+    imaging = pd.concat(frames, ignore_index=True)
+    imaging["nhc"] = pd.to_numeric(imaging["nhc"], errors="coerce").astype("Int64")
+    return imaging
+
+
+def run_group(nhcs: list[int], status_label: str) -> pd.DataFrame:
+    """Ensambla el grupo: TODOS los pacientes (con demografía) + sus TC.
+
+    Un paciente sin ningún TC en su ventana aparece igualmente con una fila
+    y las columnas de prueba vacías (LEFT JOIN en pandas).
+    """
+    if not nhcs:
+        return pd.DataFrame()
+
+    # Base: una fila por paciente del grupo, con status y demografía.
+    base = pd.DataFrame({"nhc": pd.array(nhcs, dtype="Int64")})
+    base["status"] = status_label
+    base = base.merge(fetch_demographics(nhcs), on="nhc", how="left")
+
+    imaging = fetch_imaging(nhcs, status_label)
+    if imaging.empty:
+        return base
+    # LEFT JOIN: pacientes con N TC → N filas; sin TC → 1 fila con prueba vacía.
+    return base.merge(imaging, on="nhc", how="left")
 
 
 def prepare_output(df: pd.DataFrame) -> pd.DataFrame:
-    """Ordena columnas y normaliza las fechas (sin zona horaria)."""
-    out = df.copy()
-    # Evita problemas con offsets mixtos (+01:00 / +02:00) del validador.
-    for col in ("data_prova", "data_naixement"):
-        if col in out.columns:
-            out[col] = pd.to_datetime(
-                out[col].astype(str).str.slice(0, 10),
-                format="%Y-%m-%d",
-                errors="coerce",
-            )
-    return out[OUTPUT_COLUMNS]
+    """Ordena columnas y normaliza fecha/hora (sin zona horaria).
+
+    Se trabaja por slicing del string del timestamp para no chocar con los
+    offsets mixtos (+01:00 / +02:00) que devuelve el validador.
+    """
+    out = df.copy().rename(columns={"status": "estado"})
+
+    # Timestamp de la prueba → fecha (YYYY-MM-DD) + hora (HH:MM:SS).
+    if "fecha_hora_prueba" in out.columns:
+        raw = out["fecha_hora_prueba"].astype(str)
+        out["fecha_prueba"] = pd.to_datetime(
+            raw.str.slice(0, 10), format="%Y-%m-%d", errors="coerce"
+        )
+        out["hora_prueba"] = raw.str.slice(11, 19).where(raw.str.len() >= 19)
+
+    if "fecha_nacimiento" in out.columns:
+        out["fecha_nacimiento"] = pd.to_datetime(
+            out["fecha_nacimiento"].astype(str).str.slice(0, 10),
+            format="%Y-%m-%d",
+            errors="coerce",
+        )
+
+    out = out.reindex(columns=OUTPUT_COLUMNS)
+    return out.sort_values(
+        ["estado", "nhc", "fecha_prueba", "hora_prueba"], na_position="last"
+    ).reset_index(drop=True)
 
 
 def save_results(df: pd.DataFrame) -> None:
@@ -222,13 +294,18 @@ def main() -> int:
     out = pd.concat(results, ignore_index=True)
 
     # --- Resumen agregado (sin datos individuales) ---
-    print("Total TC encontrados:", len(out))
-    print("\nPor status:")
-    print(
-        out.groupby("status")
-        .agg(proves=("prestacion", "count"), pacients=("nhc", "nunique"))
-        .to_string()
-    )
+    # 'prestacion' es NaN en los pacientes sin ninguna prueba (fila vacía).
+    con_prueba = out[out["prestacion"].notna()]
+    resumen = pd.DataFrame(
+        {
+            "pruebas": out.groupby("status")["prestacion"].count(),
+            "pac_con_prueba": con_prueba.groupby("status")["nhc"].nunique(),
+            "pac_total": out.groupby("status")["nhc"].nunique(),
+        }
+    ).fillna(0).astype(int)
+    print("Total TC encontrados:", len(con_prueba))
+    print("\nPor estado:")
+    print(resumen.to_string())
 
     save_results(out)
     print(f"\nResultados guardados en:")

@@ -152,10 +152,7 @@ def execute_query(query, verbose=True):
         db_map, config["database_name"]
     )
     if used_validador_fallback and verbose:
-        print(
-            f"Base '{DATASCOPE_SCHEMA_GESTOR}' no disponible en Metabase; "
-            f"usando '{DATASCOPE_SCHEMA_VALIDADOR}'."
-        )
+        print(f"Usando '{DATASCOPE_SCHEMA_VALIDADOR}'")
 
     sql = (
         adapt_query_for_validador(query)
