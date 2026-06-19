@@ -23,7 +23,7 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 # Archivo Excel de entrada y carpeta donde se guardará el CSV.
-EXCEL_PATH = PROJECT_ROOT / "data" / "Pacte Sd Lynch CAR 2026.xlsx"
+EXCEL_PATH = PROJECT_ROOT / "data" / "Pacte Sd Lynch CAR 2026_new.xlsx"
 OUTPUT_DIR = PROJECT_ROOT / "data" / "processed"
 
 # Solo la hoja 1 tiene datos; las otras están vacías.
