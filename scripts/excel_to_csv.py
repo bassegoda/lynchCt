@@ -4,7 +4,6 @@ Convierte el Excel Pacte Sd a CSV para análisis con DataNex.
 
 Uso:
     python scripts/excel_to_csv.py              # exporta CSV
-    python scripts/excel_to_csv.py --inspect    # solo muestra hojas y columnas
 
 El Excel vive en data/ (gitignored). Edita las constantes de abajo si cambia el archivo.
 """
@@ -33,6 +32,8 @@ SHEET_NAME = "Hoja1"
 # Fila (empezando en 0) donde están los nombres de columna en el Excel.
 HEADER_ROW = 0
 
+# Nombre de archivo de salida
+OUTPUT_CSV_NAME = "cohorte_lynch_car.csv"
 
 def to_snake_case(name: str) -> str:
     """
@@ -140,7 +141,7 @@ def export_csv(excel_path: Path, output_dir: Path) -> Path:
     cohort = transform_cohort(raw)
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    out_path = output_dir / f"{to_snake_case(excel_path.stem)}.csv"
+    out_path = output_dir / OUTPUT_CSV_NAME
 
     # utf-8-sig: Excel en Windows abre bien los acentos. date_format: fechas como 1965-03-05.
     cohort.to_csv(
